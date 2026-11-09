@@ -1,0 +1,406 @@
+# Pixel Лаунчер: собирает APK в облаке GitHub, компьютер не нужен
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - name: Android SDK
+        run: |
+          S="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$S" --licenses > /dev/null || true
+          "$S" "platforms;android-35" "build-tools;34.0.0" > /dev/null || true
+      - name: Create project
+        run: |
+          mkdir -p PixelLauncher && cd PixelLauncher
+          cat > settings.gradle.kts <<'EOF_FILE'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "PixelLauncher"
+          include(":app")
+          EOF_FILE
+          cat > build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application") version "8.7.3" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+          }
+          EOF_FILE
+          cat > gradle.properties <<'EOF_FILE'
+          org.gradle.jvmargs=-Xmx2048m
+          android.useAndroidX=true
+          kotlin.code.style=official
+          EOF_FILE
+          mkdir -p app
+          cat > app/build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.example.pixellauncher"
+              compileSdk = 35
+              defaultConfig {
+                  applicationId = "com.example.pixellauncher"
+                  minSdk = 21
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.15.0")
+          }
+          EOF_FILE
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LAUNCHER" />
+                  </intent>
+                  <intent><action android:name="android.intent.action.DIAL" /></intent>
+                  <intent>
+                      <action android:name="android.intent.action.SENDTO" />
+                      <data android:scheme="smsto" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <category android:name="android.intent.category.BROWSABLE" />
+                      <data android:scheme="https" />
+                  </intent>
+                  <intent><action android:name="android.media.action.STILL_IMAGE_CAMERA" /></intent>
+              </queries>
+
+              <application
+                  android:allowBackup="false"
+                  android:icon="@android:drawable/sym_def_app_icon"
+                  android:label="Pixel Лаунчер"
+                  android:theme="@style/Home">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTask"
+                      android:stateNotNeeded="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.HOME" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_FILE
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/themes.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Home" parent="android:Theme.Material.Wallpaper.NoTitleBar">
+                  <item name="android:windowShowWallpaper">true</item>
+                  <item name="android:windowIsTranslucent">true</item>
+                  <item name="android:windowBackground">@android:color/transparent</item>
+              </style>
+          </resources>
+          EOF_FILE
+          mkdir -p app/src/main/java/com/example/pixellauncher
+          cat > app/src/main/java/com/example/pixellauncher/MainActivity.kt <<'EOF_FILE'
+          package com.example.pixellauncher
+
+          import android.app.Activity
+          import android.app.ActivityOptions
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.content.res.Configuration
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.graphics.drawable.ColorDrawable
+          import android.graphics.drawable.Drawable
+          import android.graphics.drawable.GradientDrawable
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.provider.MediaStore
+          import android.provider.Settings
+          import android.text.InputType
+          import android.text.TextUtils
+          import android.view.GestureDetector
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.ViewGroup
+          import android.view.inputmethod.EditorInfo
+          import android.view.inputmethod.InputMethodManager
+          import android.widget.BaseAdapter
+          import android.widget.EditText
+          import android.widget.FrameLayout
+          import android.widget.GridView
+          import android.widget.ImageView
+          import android.widget.LinearLayout
+          import android.widget.PopupMenu
+          import android.widget.Space
+          import android.widget.TextClock
+          import android.widget.TextView
+          import androidx.core.content.ContextCompat
+          import androidx.core.view.ViewCompat
+          import androidx.core.view.WindowCompat
+          import androidx.core.view.WindowInsetsCompat
+          import androidx.core.widget.doAfterTextChanged
+
+          class App(val label: String, val pkg: String, val icon: Drawable, val intent: Intent)
+
+          class MainActivity : Activity() {
+              private var all = listOf<App>()
+              private var isOpen = false
+              private lateinit var root: FrameLayout
+              private lateinit var dock: LinearLayout
+              private lateinit var drawer: LinearLayout
+              private lateinit var grid: GridView
+              private lateinit var search: EditText
+
+              // Цвета Material You (динамические, из обоев) + светлая/тёмная тема
+              private val dark get() = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+              private fun pick(night: Int, day: Int, nightFb: Long, dayFb: Long) =
+                  if (Build.VERSION.SDK_INT >= 31) ContextCompat.getColor(this, if (dark) night else day)
+                  else (if (dark) nightFb else dayFb).toInt()
+              private val fg get() = pick(android.R.color.system_neutral1_50, android.R.color.system_neutral1_900, 0xFFEDEDED, 0xFF1B1B1F)
+              private val sheet get() = pick(android.R.color.system_neutral1_900, android.R.color.system_neutral1_10, 0xFF1B1B1F, 0xFFFAFAFA)
+              private val pillBg get() = pick(android.R.color.system_neutral2_800, android.R.color.system_accent2_100, 0xFF2E2F36, 0xFFE3E7F2)
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+              private fun round(color: Int, r: Int) = GradientDrawable().apply { setColor(color); cornerRadius = dp(r).toFloat() }
+
+              private val ad = object : BaseAdapter() {
+                  var items = listOf<App>()
+                  override fun getCount() = items.size
+                  override fun getItem(p: Int) = items[p]
+                  override fun getItemId(p: Int) = p.toLong()
+                  override fun getView(p: Int, v: View?, g: ViewGroup?): View = cell(items[p], true)
+              }
+
+              private val gd by lazy {
+                  GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+                      override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
+                          if (e1 == null) return false
+                          val dy = e2.y - e1.y
+                          if (!isOpen && dy < -dp(60) && vy < -600) { show(true); return true }
+                          if (isOpen && dy > dp(80) && vy > 800 && !grid.canScrollVertically(-1)) { show(false); return true }
+                          return false
+                      }
+                  })
+              }
+
+              override fun onCreate(s: Bundle?) {
+                  super.onCreate(s)
+                  WindowCompat.setDecorFitsSystemWindows(window, false)
+                  window.statusBarColor = Color.TRANSPARENT
+                  window.navigationBarColor = Color.TRANSPARENT
+                  root = FrameLayout(this)
+
+                  // ---- Главный экран: дата, док, поиск ----
+                  val home = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setOnLongClickListener {
+                          runCatching { startActivity(Intent.createChooser(Intent(Intent.ACTION_SET_WALLPAPER), "Обои")) }
+                          true
+                      }
+                  }
+                  home.addView(TextClock(this).apply {
+                      format12Hour = "EEE, d MMM"; format24Hour = "EEE, d MMM"
+                      textSize = 30f; setTextColor(Color.WHITE); setShadowLayer(8f, 0f, 2f, 0x66000000)
+                      typeface = Typeface.create("google-sans", Typeface.NORMAL)
+                  })
+                  home.addView(Space(this), LinearLayout.LayoutParams(-1, 0, 1f))
+                  dock = LinearLayout(this).apply { gravity = Gravity.CENTER }
+                  home.addView(dock, LinearLayout.LayoutParams(-1, -2))
+                  val pill = LinearLayout(this).apply {
+                      gravity = Gravity.CENTER_VERTICAL
+                      background = round(pillBg, 28)
+                      setPadding(dp(20), 0, dp(20), 0)
+                      addView(ImageView(context).apply {
+                          setImageResource(android.R.drawable.ic_menu_search); setColorFilter(fg)
+                      }, LinearLayout.LayoutParams(dp(24), dp(24)))
+                      addView(TextView(context).apply {
+                          text = "Поиск"; textSize = 16f; setTextColor(fg); setPadding(dp(16), 0, 0, 0)
+                      })
+                      setOnClickListener { show(true, true) }
+                  }
+                  home.addView(pill, LinearLayout.LayoutParams(-1, dp(56)).apply { topMargin = dp(12) })
+
+                  // ---- Шторка приложений ----
+                  search = EditText(this).apply {
+                      hint = "Поиск приложений"; textSize = 16f
+                      setTextColor(fg); setHintTextColor(fg and 0x99FFFFFF.toInt())
+                      background = round(pillBg, 28)
+                      setPadding(dp(20), 0, dp(20), 0)
+                      setSingleLine()
+                      inputType = InputType.TYPE_CLASS_TEXT
+                      imeOptions = EditorInfo.IME_ACTION_GO
+                      doAfterTextChanged { t ->
+                          val q = t?.toString() ?: ""
+                          ad.items = all.filter { it.label.contains(q, true) }
+                          ad.notifyDataSetChanged()
+                      }
+                      setOnEditorActionListener { _, _, _ -> ad.items.firstOrNull()?.let { launch(it, this) }; true }
+                  }
+                  grid = GridView(this).apply {
+                      numColumns = 4; verticalSpacing = dp(8); clipToPadding = false
+                      setPadding(dp(8), dp(8), dp(8), 0)
+                      selector = ColorDrawable(Color.TRANSPARENT)
+                      adapter = ad
+                      setOnItemClickListener { _, v, p, _ -> launch(ad.items[p], v) }
+                      setOnItemLongClickListener { _, v, p, _ -> showMenu(ad.items[p], v); true }
+                  }
+                  drawer = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      visibility = View.GONE
+                      background = GradientDrawable().apply {
+                          setColor(sheet)
+                          setCornerRadii(FloatArray(8) { if (it < 4) dp(28).toFloat() else 0f })
+                      }
+                      addView(search, LinearLayout.LayoutParams(-1, dp(56)).apply { setMargins(dp(16), dp(8), dp(16), dp(8)) })
+                      addView(grid, LinearLayout.LayoutParams(-1, 0, 1f))
+                  }
+
+                  root.addView(home, -1, -1)
+                  root.addView(drawer, -1, -1)
+                  setContentView(root)
+
+                  ViewCompat.setOnApplyWindowInsetsListener(root) { _, w ->
+                      val b = w.getInsets(WindowInsetsCompat.Type.systemBars())
+                      val bottom = maxOf(b.bottom, w.getInsets(WindowInsetsCompat.Type.ime()).bottom)
+                      home.setPadding(dp(16), b.top + dp(24), dp(16), bottom + dp(16))
+                      drawer.setPadding(0, b.top, 0, bottom)
+                      w
+                  }
+              }
+
+              @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+              override fun onBackPressed() { if (isOpen) show(false) }
+
+              override fun onStart() { super.onStart(); reload() }
+
+              override fun onNewIntent(intent: Intent) {
+                  super.onNewIntent(intent)
+                  if (isOpen) show(false) // кнопка «Домой» закрывает шторку
+              }
+
+              override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+                  gd.onTouchEvent(ev)
+                  return super.dispatchTouchEvent(ev)
+              }
+
+              private fun cell(a: App, labels: Boolean) = LinearLayout(this).apply {
+                  orientation = LinearLayout.VERTICAL
+                  gravity = Gravity.CENTER_HORIZONTAL
+                  setPadding(dp(4), dp(8), dp(4), dp(8))
+                  addView(ImageView(context).apply { setImageDrawable(a.icon) }, LinearLayout.LayoutParams(dp(56), dp(56)))
+                  if (labels) addView(TextView(context).apply {
+                      text = a.label; textSize = 12f; maxLines = 1
+                      ellipsize = TextUtils.TruncateAt.END; gravity = Gravity.CENTER
+                      setTextColor(fg); setPadding(0, dp(4), 0, 0)
+                  })
+              }
+
+              @Suppress("DEPRECATION")
+              private fun reload() {
+                  val pm = packageManager
+                  all = pm.queryIntentActivities(
+                      Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER),
+                      0
+                  ).filter { it.activityInfo.packageName != packageName }.map { r ->
+                      val p = r.activityInfo.packageName
+                      App(
+                          r.loadLabel(pm).toString(), p, r.loadIcon(pm),
+                          Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                              .setClassName(p, r.activityInfo.name)
+                              .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+                      )
+                  }.sortedBy { it.label.lowercase() }
+                  ad.items = all
+                  ad.notifyDataSetChanged()
+
+                  // Док: телефон, сообщения, браузер, камера (приложения по умолчанию)
+                  dock.removeAllViews()
+                  listOf(
+                      Intent(Intent.ACTION_DIAL),
+                      Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:")),
+                      Intent(Intent.ACTION_VIEW, Uri.parse("https://")).addCategory(Intent.CATEGORY_BROWSABLE),
+                      Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)
+                  ).mapNotNull {
+                      pm.resolveActivity(it, PackageManager.MATCH_DEFAULT_ONLY)
+                          ?.activityInfo?.packageName
+                  }.distinct().mapNotNull { p -> all.firstOrNull { it.pkg == p } }.forEach { a ->
+                      dock.addView(
+                          cell(a, false).apply { setOnClickListener { launch(a, it) } },
+                          LinearLayout.LayoutParams(0, -2, 1f)
+                      )
+                  }
+              }
+
+              private fun launch(a: App, v: View) {
+                  startActivity(a.intent, ActivityOptions.makeScaleUpAnimation(v, 0, 0, v.width, v.height).toBundle())
+                  if (isOpen) show(false)
+              }
+
+              private fun showMenu(a: App, v: View) {
+                  PopupMenu(this, v).apply {
+                      menu.add("О приложении").setOnMenuItemClickListener {
+                          startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${a.pkg}"))); true
+                      }
+                      menu.add("Удалить").setOnMenuItemClickListener {
+                          startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:${a.pkg}"))); true
+                      }
+                  }.show()
+              }
+
+              private fun show(v: Boolean, focus: Boolean = false) {
+                  isOpen = v
+                  val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+                  if (v) {
+                      drawer.visibility = View.VISIBLE
+                      drawer.translationY = root.height.toFloat()
+                      drawer.animate().translationY(0f).setDuration(260).start()
+                      if (focus) search.postDelayed({ search.requestFocus(); imm.showSoftInput(search, 0) }, 280)
+                  } else {
+                      search.setText(""); search.clearFocus(); grid.setSelection(0)
+                      imm.hideSoftInputFromWindow(search.windowToken, 0)
+                      drawer.animate().translationY(root.height.toFloat()).setDuration(220)
+                          .withEndAction { if (!isOpen) drawer.visibility = View.GONE }.start()
+                  }
+              }
+          }
+          EOF_FILE
+      - name: Build
+        working-directory: PixelLauncher
+        run: gradle assembleDebug --no-daemon --console=plain
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PixelLauncher-apk
+          path: PixelLauncher/app/build/outputs/apk/debug/app-debug.apk
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ github.run_number }}" PixelLauncher/app/build/outputs/apk/debug/app-debug.apk --title "Pixel Лаунчер ${{ github.run_number }}" --notes "Debug APK"
