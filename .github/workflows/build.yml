@@ -1,0 +1,42 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Unpack project
+        run: |
+          ls -la
+          Z=$(git -c core.quotepath=false log --diff-filter=AM --name-only --pretty=format: -- '*.zip' | while IFS= read -r f; do if [ -f "$f" ]; then echo "$f"; break; fi; done)
+          echo "Using zip: $Z"
+          [ -n "$Z" ] || { echo "No zip file in the repository"; exit 1; }
+          unzip -q "$Z"
+      - name: Gradle 8.9
+        run: |
+          curl -sSL https://services.gradle.org/distributions/gradle-8.9-bin.zip -o /tmp/gradle.zip
+          unzip -q /tmp/gradle.zip -d /tmp
+      - name: Android SDK
+        run: |
+          S="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$S" --licenses > /dev/null || true
+          "$S" "platforms;android-35" "build-tools;34.0.0" > /dev/null || true
+      - name: Build APK
+        working-directory: PixelLauncher
+        run: /tmp/gradle-8.9/bin/gradle assembleDebug -PbuildNumber=${{ github.run_number }} --no-daemon --console=plain
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ github.run_number }}" PixelLauncher/app/build/outputs/apk/debug/app-debug.apk --title "Pixel Лаунчер ${{ github.run_number }}" --notes "Debug APK"
+          
