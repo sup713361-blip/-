@@ -33,6 +33,10 @@ jobs:
           "$S" "platforms;android-35" "build-tools;34.0.0" > /dev/null || true
       - name: Build APK
         working-directory: PixelLauncher
+                working-directory: PixelLauncher
+        env:
+          KS_PASS: ${{ secrets.KS_PASS }}
+        run: ...
         run: /tmp/gradle-8.9/bin/gradle assembleDebug -PbuildNumber=${{ github.run_number }} --no-daemon --console=plain
       - name: Publish release
         env:
